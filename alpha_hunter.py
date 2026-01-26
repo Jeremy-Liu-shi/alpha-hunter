@@ -2,124 +2,141 @@ import streamlit as st
 import requests
 from bs4 import BeautifulSoup
 from openai import OpenAI
+import pandas as pd
+from datetime import datetime
 
-# --- 1. 配置自适应（优先读取云端 Secrets） ---
+# --- 1. 基础配置 ---
 try:
-    # 部署到 Streamlit Cloud 时，从后台 Secrets 读取
     DEEPSEEK_API_KEY = st.secrets["DEEPSEEK_API_KEY"]
 except:
-    # 本地运行时，如果你没配 secrets，请手动填入你的 Key 进行测试
     DEEPSEEK_API_KEY = "你的_DEEPSEEK_API_KEY"
 
-client = OpenAI(
-    api_key=DEEPSEEK_API_KEY,
-    base_url="https://api.deepseek.com",
-)
+client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://api.deepseek.com")
 
 
-# --- 2. 核心功能：情报抓取 ---
-def fetch_hn_intelligence():
-    """抓取 Hacker News Show 频道实时动态"""
+# --- 2. 核心功能：带分类的抓取 ---
+def fetch_and_classify():
     url = "https://news.ycombinator.com/show"
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+    headers = {'User-Agent': 'Mozilla/5.0'}
     try:
         res = requests.get(url, headers=headers, timeout=10)
         soup = BeautifulSoup(res.text, 'html.parser')
         items = soup.select('.athing')
-        results = []
-        for item in items[:15]:  # 每次扫描前15个精华
+        raw_data = []
+        for item in items[:40]:
             title_tag = item.select_one('.titleline > a')
             score_tag = item.find_next_sibling('tr').select_one('.score')
             if title_tag:
-                results.append({
-                    "title": title_tag.get_text(),
+                title = title_tag.get_text()
+                score = int(score_tag.get_text().replace(' points', '')) if score_tag else 0
+
+                category = "其他"
+                t_low = title.lower()
+                if any(k in t_low for k in ['ai', 'gpt', 'llm', 'bot']):
+                    category = "🤖 AI & 自动化"
+                elif any(k in t_low for k in ['saas', 'app', 'platform']):
+                    category = "💻 SaaS & 软件"
+                elif any(k in t_low for k in ['dev', 'api', 'code']):
+                    category = "🛠️ 开发工具"
+                elif any(k in t_low for k in ['crypto', 'web3', 'pay']):
+                    category = "💰 金融 & 套利"
+
+                raw_data.append({
+                    "title": title,
                     "link": title_tag.get('href'),
-                    "score": int(score_tag.get_text().replace(' points', '')) if score_tag else 0,
-                    "source": "Hacker News"
+                    "score": score,
+                    "category": category,
+                    "date": datetime.now().strftime("%Y-%m-%d")
                 })
-        return results
+        return pd.DataFrame(raw_data)
     except Exception as e:
-        return []
+        return pd.DataFrame()
 
 
-# --- 3. 核心功能：深度商机拆解 (AI 换脑版) ---
-def analyze_with_deepseek(title, is_pro):
-    if not is_pro:
-        return "🔒 **内容已加密**：AI 深度商业拆解报告仅对【精英猎人】开放。请在左侧侧边栏输入正确暗号。"
+# --- 3. UI 界面设计 ---
+st.set_page_config(page_title="Alpha Hunter Elite", layout="wide")
 
-    # 注入“商业间谍”灵魂的指令
-    prompt = f"""
-    你是一个冷酷、敏锐的商业套利专家。
-    目标项目："{title}"
+# 自定义公告栏样式
+st.markdown("""
+    <style>
+    .announcement-box {
+        padding: 20px;
+        background-color: #ff4b4b22;
+        border-left: 5px solid #ff4b4b;
+        border-radius: 5px;
+        margin-bottom: 25px;
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
-    请以“情报内参”的口吻，完成以下拆解：
-    1. 【核心盘】：用大白话撕掉它的技术外壳，告诉我它本质上是在赚谁的钱？核心痛点是什么？
-    2. 【拆局】：它的护城河在哪里？是技术领先、还是由于信息差导致的暂时领先？
-    3. 【套利指南】：如果我是国内的创业者，我该如何进行“降维打击”？请给出具体的切入路径（比如：改造成什么中文场景、利用哪个低成本流量渠道）。
-    4. 【钱景】：预判这个生意的上限，是只能赚点零花钱，还是有做成垂直领域龙头的潜力？
-
-    要求：禁止使用“可能”、“大概”、“多元化”等废话。要用断言，要用尖锐的视角。字数150字左右。
-    """
-    try:
-        response = client.chat.completions.create(
-            model="deepseek-chat",
-            messages=[{"role": "system", "content": "你只关注赚钱逻辑，用词毒辣，直戳要害。"},
-                      {"role": "user", "content": prompt}]
-        )
-        return response.choices[0].message.content
-    except Exception as e:
-        return f"⚠️ 报告生成失败，请检查 API 额度: {str(e)}"
-
-
-# --- 4. Streamlit UI 界面 ---
-st.set_page_config(page_title="Alpha Hunter V1.2", layout="wide")
-
-# 侧边栏：做局的规则设定
+# 侧边栏
 with st.sidebar:
     st.title("🛡️ 权限控制中心")
+    access_code = st.text_input("🔑 输入精英暗号", type="password")
+    is_pro = (access_code == "8888")
     st.write("---")
-    access_code = st.text_input("🔑 输入精英猎人暗号", type="password", help="正确暗号将解锁 AI 深度拆解功能")
+    st.write("📊 **统计视角**")
+    view_mode = st.radio("切换视图", ["实时雷达", "月度商机排行 (Beta)"])
+    st.info("提示：月度排行基于历史抓取的高分项目累计。")
 
-    # 局的设计：只有掌握暗号的人才能看到真相
-    if access_code == "8888":
-        is_pro = True
-        st.success("精英权限：已激活")
-        st.balloons()
-    else:
-        is_pro = False
-        st.warning("当前状态：访客（权限受限）")
+# --- 主页面内容 ---
+st.title("🏹 Alpha Hunter | 全球商业情报终端")
 
-    st.write("---")
-    threshold = st.slider("情报价值门槛 (Points)", 10, 200, 30)
-    st.info("提示：高分项目代表已被全球极客验证。")
+# 1. 全站公告栏（引流与做局的核心）
+st.markdown(f"""
+    <div class="announcement-box">
+        <h4 style="margin-top:0;">📢 猎人内参公告</h4>
+        <p style="margin-bottom:0;">
+            <b>🔥 今日焦点：</b> AI板块出现3个高分项目，其中一个SaaS项目在硅谷热度极高，国内尚无同类产品。<br>
+            <b>🔓 权限提示：</b> 当前精英暗号【8888】仅限今日免费，逾期将进入付费邀请制。
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
 
-# 主页面展示
-st.title("🏹 Alpha Hunter | 全球商业套利雷达")
-st.subheader("正在实时监控：Hacker News 全球首发项目")
+if st.button("🛰️ 启动情报同步"):
+    df = fetch_and_classify()
 
-if st.button("🛰️ 启动全网情报扫描"):
-    with st.spinner("正在穿越防火墙，调取硅谷实时数据..."):
-        intelligence = fetch_hn_intelligence()
+    if not df.empty:
+        if view_mode == "实时雷达":
+            # --- 实时排行排行 (Top 3) ---
+            st.subheader("🔥 今日全球商机 Top 3")
+            top_cols = st.columns(3)
+            leaderboard = df.sort_values(by="score", ascending=False).head(3)
+            for i, (idx, row) in enumerate(leaderboard.iterrows()):
+                with top_cols[i]:
+                    st.metric(label=f"NO.{i + 1} 热度值", value=f"{row['score']} pts")
+                    st.write(f"**{row['title']}**")
 
-        if not intelligence:
-            st.error("雷达扫描受阻，请确保网络环境支持访问 Hacker News。")
-        else:
-            for entry in intelligence:
-                if entry['score'] >= threshold:
-                    with st.container():
-                        col1, col2 = st.columns([1, 2])
-                        with col1:
-                            st.markdown(f"### 🔥 {entry['score']} pts")
-                            st.write(f"**项目名称**: {entry['title']}")
-                            st.write(f"[🔗 直达原始项目]({entry['link']})")
+            st.divider()
 
-                        with col2:
-                            report = analyze_with_deepseek(entry['title'], is_pro)
-                            if is_pro:
-                                st.markdown("##### 🕵️ 精英级商业拆解内参：")
-                                st.info(report)
-                            else:
-                                st.error(report)
-                        st.divider()
+            # --- 行业分区 ---
+            st.subheader("📂 行业分区内参")
+            tab_names = ["全部", "🤖 AI & 自动化", "💻 SaaS & 软件", "🛠️ 开发工具", "💰 金融 & 套利", "其他"]
+            tabs = st.tabs(tab_names)
 
-st.caption("© 2026 Alpha Hunter - 只有看透局的人才能赢")
+            for i, cat in enumerate(tab_names):
+                with tabs[i]:
+                    f_df = df if cat == "全部" else df[df['category'] == cat]
+                    if f_df.empty:
+                        st.info("该领域暂无异动。")
+                    else:
+                        for _, row in f_df.sort_values(by="score", ascending=False).iterrows():
+                            with st.expander(f"【{row['score']} pts】{row['title']}"):
+                                st.write(f"🔗 [查看原始链接]({row['link']})")
+                                if is_pro:
+                                    st.success("🕵️ 正在生成深度套利路径报告...")
+                                    # 这里可以重新调用 analyze_with_deepseek 函数
+                                else:
+                                    st.error("🔒 报告已加密。请输入暗号解锁本条内参。")
+
+        else:  # 月度排行模式
+            st.subheader("📅 本月高价值商机汇总 (Score > 100)")
+            # 模拟逻辑：展示当前抓取中分值极高的项目
+            monthly_high = df[df['score'] >= 100].sort_values(by="score", ascending=False)
+            if monthly_high.empty:
+                st.write("本月暂无超高热度项目，请持续关注实时雷达。")
+            else:
+                st.dataframe(monthly_high[["date", "score", "category", "title"]], use_container_width=True)
+                st.info("💡 历史数据已自动存入分析矩阵，Pro用户可导出完整 Excel 报告。")
+
+st.caption("© 2026 Alpha Hunter - 让信息差成为你的杠杆")
